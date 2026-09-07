@@ -1,12 +1,31 @@
 import datetime
 import pandas as pd
 import streamlit as st
+from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(
-	page_title="Comidas misioneros - Apizaco y Tlaxco", layout="wide"
+    page_title="Comidas Misioneros - Apizaco y Tlaxco", layout="wide"
 )
 
 st.title("🍽️ Calendario de Comidas para Misioneros")
+
+# Conexión a Google Sheets
+conn = st.connection("gsheets", type=GSheetsConnection)
+
+# Columnas esperadas
+expected_columns = ["Compañerismo", "Mes-Año", "Fecha", "Familia / Hermano", "Teléfono", "Notas"]
+
+# Leer los datos actuales de la hoja de cálculo (ttl=0 para evitar caché)
+try:
+    df_db = conn.read(ttl=0)
+    if df_db is None or df_db.empty or not all(col in df_db.columns for col in expected_columns):
+        df_db = pd.DataFrame(columns=expected_columns)
+    else:
+        # Asegurar que solo manejemos las columnas correctas
+        df_db = df_db[expected_columns]
+except Exception as e:
+    st.error(f"Error al conectar con Google Sheets: {e}")
+    df_db = pd.DataFrame(columns=expected_columns)
 
 # Barra lateral: Filtros de Zona y Mes
 st.sidebar.header("Filtros de Visualización")
@@ -21,40 +40,18 @@ zona = st.sidebar.selectbox(
 )
 
 meses_nombres = {
-    1: "Enero",
-    2: "Febrero",
-    3: "Marzo",
-    4: "Abril",
-    5: "Mayo",
-    6: "Junio",
-    7: "Julio",
-    8: "Agosto",
-    9: "Septiembre",
-    10: "Octubre",
-    11: "Noviembre",
-    12: "Diciembre",
+    1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
+    5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto",
+    9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
 }
 
 col_m, col_a = st.sidebar.columns(2)
 with col_m:
     mes_sel = st.selectbox(
-        "Mes", options=list(meses_nombres.keys()), format_func=lambda x: meses_nombres[x], index=8 # Septiembre por defecto (2026)
+        "Mes", options=list(meses_nombres.keys()), format_func=lambda x: meses_nombres[x], index=8 # Septiembre 2026 por defecto
     )
 with col_a:
     anio_sel = st.selectbox("Año", options=[2026, 2027], index=0)
-
-# Base de datos simulada en sesión (posteriormente la conectamos a Google Sheets o SQLite)
-if "db" not in st.session_state:
-    st.session_state.db = pd.DataFrame(
-        columns=[
-            "Compañerismo",
-            "Mes-Año",
-            "Fecha",
-            "Familia / Hermano",
-            "Teléfono",
-            "Notas",
-        ]
-    )
 
 st.header(f"Agenda para: {zona} — {meses_nombres[mes_sel]} {anio_sel}")
 
@@ -64,10 +61,16 @@ with tab1:
     st.subheader(f"Registros de {meses_nombres[mes_sel]} {anio_sel}")
     
     periodo_str = f"{anio_sel}-{str(mes_sel).zfill(2)}"
-    df_filtrado = st.session_state.db[
-        (st.session_state.db["Compañerismo"] == zona) & 
-        (st.session_state.db["Mes-Año"] == periodo_str)
-    ]
+    
+    # Filtrar datos de forma segura
+    if not df_db.empty and "Compañerismo" in df_db.columns and "Mes-Año" in df_db.columns:
+        df_limpio = df_db.dropna(subset=["Compañerismo", "Mes-Año"])
+        df_filtrado = df_limpio[
+            (df_limpio["Compañerismo"] == zona) & 
+            (df_limpio["Mes-Año"] == periodo_str)
+        ]
+    else:
+        df_filtrado = pd.DataFrame(columns=expected_columns)
 
     if df_filtrado.empty:
         st.info(f"Aún no hay familias registradas para {meses_nombres[mes_sel]} {anio_sel} en este compañerismo.")
@@ -79,7 +82,7 @@ with tab1:
 
 with tab2:
     st.subheader("Regístrate para darles de comer")
-    with st.form("form_registro_mes"):
+    with st.form("form_registro_mes", clear_on_submit=True):
         f_fecha = st.date_input(
             "Fecha de la comida", 
             datetime.date(anio_sel, mes_sel, 1)
@@ -104,11 +107,19 @@ with tab2:
                             }
                         ]
                     )
-                    st.session_state.db = pd.concat(
-                        [st.session_state.db, nuevo_registro], ignore_index=True
-                    )
-                    st.success(f"¡Gracias {f_nombre}! Registrado para el {f_fecha}.")
-                    st.rerun()
+                    
+                    try:
+                        # Asegurar limpieza de filas vacías previas
+                        df_db_clean = df_db.dropna(how="all")
+                        df_updated = pd.concat([df_db_clean, nuevo_registro], ignore_index=True)
+                        
+                        # Actualizar en Google Sheets
+                        conn.update(data=df_updated)
+                        
+                        st.success(f"¡Gracias {f_nombre}! Tu registro para el {f_fecha} se ha guardado permanentemente en Google Sheets.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error al sincronizar con Google Sheets: {e}")
                 else:
                     st.warning(f"La fecha seleccionada no corresponde a {meses_nombres[mes_sel]} {anio_sel}.")
             else:
